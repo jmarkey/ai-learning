@@ -31,6 +31,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Highlighted Change 1: Update ai-requirements.txt for LangChain
+      # This now includes 'langchain' and 'langchain-google-genai'
+      - name: Create ai-requirements.txt
+        run: |
+          echo "langchain" > ai-requirements.txt
+          echo "langchain-google-genai" >> ai-requirements.txt
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -43,11 +50,76 @@ jobs:
           git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > pr_diff.txt
           echo "diff_size=$(stat -c%s pr_diff.txt)" >> $GITHUB_OUTPUT
 
+      # Highlighted Change 2: Populate analyze_pr.py with LangChain logic
+      # The script now uses init_chat_model and handles input/output for chat models.
       - name: Create Python analysis script
         run: |
-          cat > analyze_pr.py << 'EOFPY'
-          # Ref: https://github.com/BurnyCoder/llm-pr-review-gh-action/blob/main/.github/workflows/analyze_pr_diff.yml
-          EOFPY
+          cat > analyze_pr.py << 'EOF_PYTHON_SCRIPT'
+          import os
+          from langchain.chat_models import init_chat_model # Requested import
+          from langchain_core.messages import HumanMessage # Needed for chat model input
+
+          # Read the PR diff
+          pr_diff_file = "pr_diff.txt"
+          if not os.path.exists(pr_diff_file):
+              print(f"Error: {pr_diff_file} not found.")
+              exit(1)
+          with open(pr_diff_file, "r") as f:
+              pr_diff = f.read()
+
+          # Get other PR context from environment variables
+          pr_title = os.environ.get("PR_TITLE", "No title provided")
+          pr_number = os.environ.get("PR_NUMBER", "N/A")
+          github_repository = os.environ.get("GITHUB_REPOSITORY", "Unknown/Unknown")
+
+          # Construct the prompt for the LLM
+          prompt = f"""
+          You are an AI assistant tasked with assessing the risk of changes introduced in a GitHub Pull Request.
+          Analyze the following PR diff and provide a concise risk assessment.
+          Consider potential impacts on stability, security, performance, and maintainability.
+          Output your assessment in Markdown format, clearly stating the risk level (e.g., Low, Medium, High).
+          Provide a summary of the changes and then the risk assessment with justifications.
+
+          GitHub Repository: {github_repository}
+          Pull Request Number: {pr_number}
+          Pull Request Title: {pr_title}
+
+          ---
+          PR Diff:
+          {pr_diff}
+          ---
+
+          Risk Assessment:
+          """
+
+          # Initialize the Generative Model using LangChain
+          model_name_lc = "gemini-2.0-flash" # Using the requested model
+          try:
+              # LangChain's init_chat_model will automatically pick up GOOGLE_API_KEY from environment variables
+              model = init_chat_model(model_name_lc, model_provider="google_genai")
+          except Exception as e:
+              print(f"Error initializing model '{model_name_lc}': {e}")
+              with open("llm_analysis.md", "w") as f:
+                  f.write(f"Error: Could not initialize LLM ({model_name_lc}). Please check model availability and API key permissions.")
+              exit(1)
+
+          llm_analysis = ""
+          try:
+              # Generate content using the LangChain chat model
+              # Chat models expect a list of messages. For a single prompt, use HumanMessage.
+              response = model.invoke([HumanMessage(content=prompt)])
+              llm_analysis = response.content # Extract the content from the AI message
+          except Exception as e:
+              llm_analysis = f"Error during LLM analysis: {e}\n\n" \
+                             f"Please check the GOOGLE_API_KEY, model capabilities, and input size."
+              print(f"Error during LLM analysis: {e}")
+
+          # Write the analysis to a file
+          with open("llm_analysis.md", "w") as f:
+              f.write(llm_analysis)
+
+          print("LLM analysis complete and saved to llm_analysis.md")
+          EOF_PYTHON_SCRIPT
 
       - name: Analyze diff with LLM
         env:
@@ -64,10 +136,11 @@ jobs:
           script: |
             const fs = require('fs');
             const analysis = fs.readFileSync('llm_analysis.md', 'utf8');
-            
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `## LLM Analysis of PR Changes\n\n${analysis}`
             })
+
