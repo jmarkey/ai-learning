@@ -1,0 +1,73 @@
+name: Assess PR Risk
+
+on:
+  pull_request:
+    types: [opened]
+
+# Add permissions needed to comment on PRs
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  analyze-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/ai-requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ai-requirements.txt
+
+      - name: Get PR diff
+        id: get-diff
+        run: |
+          # Get the PR diff and save it to a file
+          git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > pr_diff.txt
+          echo "diff_size=$(stat -c%s pr_diff.txt)" >> $GITHUB_OUTPUT
+
+      - name: Create Python analysis script
+        run: |
+          cat > analyze_pr.py << 'EOFPY'
+          # Ref: https://github.com/BurnyCoder/llm-pr-review-gh-action/blob/main/.github/workflows/analyze_pr_diff.yml
+          EOFPY
+
+      - name: Analyze diff with LLM
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python analyze_pr.py
+
+      - name: Add LLM analysis as PR comment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('llm_analysis.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## LLM Analysis of PR Changes\n\n${analysis}`
+            })
