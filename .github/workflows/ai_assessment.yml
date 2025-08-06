@@ -2,7 +2,7 @@ name: Assess PR Risk
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, reopened]
 
 # Add permissions needed to comment on PRs
 permissions:
