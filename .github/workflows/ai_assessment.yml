@@ -4,7 +4,8 @@ on:
   pull_request:
     types: [opened, reopened]
 
-# Add permissions needed to comment on PRs
+# References: https://circuit.cisco.com/app/home
+#
 permissions:
   contents: read
   pull-requests: write
@@ -31,8 +32,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # Highlighted Change 1: Update ai-requirements.txt for LangChain
-      # This now includes 'langchain' and 'langchain-google-genai'
       - name: Create ai-requirements.txt
         run: |
           echo "langchain" > ai-requirements.txt
@@ -50,8 +49,6 @@ jobs:
           git diff ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} > pr_diff.txt
           echo "diff_size=$(stat -c%s pr_diff.txt)" >> $GITHUB_OUTPUT
 
-      # Highlighted Change 2: Populate analyze_pr.py with LangChain logic
-      # The script now uses init_chat_model and handles input/output for chat models.
       - name: Create Python analysis script
         run: |
           cat > analyze_pr.py << 'EOF_PYTHON_SCRIPT'
@@ -66,6 +63,14 @@ jobs:
               exit(1)
           with open(pr_diff_file, "r") as f:
               pr_diff = f.read()
+
+          pr_description_file = "pr_description.txt"
+          pr_description = ""
+          if os.path.exists(pr_description_file):
+              with open(pr_description_file, "r") as f:
+                  pr_description = f.read()
+          else:
+              print(f"Warning: {pr_description_file} not found. PR description will be empty.")
 
           # Get other PR context from environment variables
           pr_title = os.environ.get("PR_TITLE", "No title provided")
@@ -83,6 +88,11 @@ jobs:
           GitHub Repository: {github_repository}
           Pull Request Number: {pr_number}
           Pull Request Title: {pr_title}
+ 
+          ---
+          PR Description:
+          {pr_description if pr_description else "No description provided."}
+          ---
 
           ---
           PR Diff:
@@ -124,6 +134,9 @@ jobs:
       - name: Analyze diff with LLM
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_PROJECT: ${{ secrets.LANGSMITH_PROJECT }}
+          LANGSMITH_TRACING: true
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -143,4 +156,3 @@ jobs:
               repo: context.repo.repo,
               body: `## LLM Analysis of PR Changes\n\n${analysis}`
             })
-
